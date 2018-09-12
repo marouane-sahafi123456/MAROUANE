@@ -1,0 +1,236 @@
+package pack;
+
+import javacard.framework.APDU;
+import javacard.framework.Applet;
+import javacard.framework.ISO7816;
+import javacard.framework.ISOException;
+import javacard.framework.OwnerPIN;
+
+public class AppACOST extends Applet {
+
+    final static byte[] FILE_SFI = {(byte) 0xA0, (byte) 0xA0};
+    private byte[] File_content = new byte[256];
+    private boolean file_selected = false;
+
+    private final static byte CLA = (byte) 0x80;
+
+    // ##################### Séléctionner mon fichier #################
+    private final static byte INS_SELECT_FILE = (byte) 0xA4;
+    // ##################### Ecrire dans mon fichier #################
+    private final static byte INS_WRITE_FILE = (byte) 0x00;
+    // ##################### Lire mon fichier #################
+    private final static byte INS_READ_FILE = (byte) 0x01;
+    // ##################### Submit PIN code #################
+    private final static byte INS_SUBMIT_PIN = (byte) 0x02;
+    // ##################### Changer le code PIN #################
+    private final static byte INS_CHANGE_PIN = (byte) 0x03;
+    // ##################### Débloquer le code PIN #################
+    private final static byte INS_UNBLOCK_PIN = (byte) 0x04;
+    // ##################### Submit IC code #################
+    private final static byte INS_SUBMIT_IC = (byte) 0x05;  
+    // ##################### Change IC code #################
+    private final static byte INS_CHANGE_IC = (byte) 0x06;  
+
+    // ##################### CODE PIN #################
+    private final static byte[] value_defaut_PIN  = {(byte) 0x00, (byte) 0x00, (byte) 0x00, (byte) 0x00};
+    private final static byte lengh_PIN  = 0x04;
+    private final static byte max_essai_PIN  = 0x03;
+
+    private OwnerPIN pinCode;
+
+    // ##################### CODE IC #################
+    private final static byte[] INIT_IC = {(byte) 0xA0, (byte) 0xB0, (byte) 0xC0, (byte) 0xD0};
+    private final static byte IC_MAX_LENGTH = 0x04;
+    private final static byte IC_MAX_TRIES = 0x03;
+
+    private OwnerPIN icCode;
+
+    public static void install(byte bArray[], short bOffset, byte bLength) throws ISOException {
+        new AppACOST();
+    }
+
+    public AppACOST() {
+        register();
+
+        pinCode = new OwnerPIN(max_essai_PIN , lengh_PIN );
+        pinCode.update(value_defaut_PIN , (byte) 0, (byte) 4);
+
+        icCode = new OwnerPIN(IC_MAX_TRIES, IC_MAX_LENGTH);
+        icCode.update(INIT_IC, (byte) 0, (byte) 4);
+
+        file_selected = false;
+    }
+
+    public void process(APDU apdu) throws ISOException {
+        if (selectingApplet()) {
+            return;
+        }
+
+        byte[] buff = apdu.getBuffer();
+
+        if (buff[ISO7816.OFFSET_CLA] != CLA) {
+            ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+        }
+
+        switch (buff[ISO7816.OFFSET_INS]) {
+            case INS_SELECT_FILE:
+                // In this case the APDU command should be for example
+                // CLA  INS  P1     P2      length  file_sfi
+                // 0x80 0xA4 0x00   0x00    0x02    0xA0 0xA0 
+                if (buff[ISO7816.OFFSET_CDATA] == FILE_SFI[0] && buff[ISO7816.OFFSET_CDATA + 1] == FILE_SFI[1]) {
+                    file_selected = true;
+
+                    /*  buff[0] = (byte)0x90;
+                    buff[1] = (byte)0x00;
+                    apdu.setOutgoingAndSend((byte)0, (byte)2); // -->> OK
+                     */
+                } else {
+                    ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
+                }
+                break;
+
+            case INS_WRITE_FILE:
+                // In this case the APDU command should be
+                // CLA  INS     P1      P2      given_data_length   data
+                // 0x80 0x00    0x00    0x00    0x05                0x01 0x02 ... 0x05    --->>> Writes 5 bytes {0x01 0x02 ... 0x05}
+                // NOTE: the file musn't be reached if the file isn't (selected && pincode submit)
+
+                if (file_selected) // and pinCOde submit
+                {
+                    if(icCode.isValidated())
+                    {
+                        byte len = buff[ISO7816.OFFSET_LC];
+
+                        for (byte i = 0; i < len; i++) {
+                            File_content[i] = buff[ISO7816.OFFSET_CDATA + i];
+                        }
+
+                        /*  buff[0] = (byte)(len); // The number of the bytes that have been written successfully
+                        buff[1] = (byte)0x90;
+                        buff[2] = (byte)0x00;
+                        buff[ISO7816.SW]
+                        apdu.setOutgoingAndSend((byte)0, (byte)3); // -->> OK
+                         */
+                        if (len == 255) {
+                            ISOException.throwIt(ISO7816.SW_FILE_FULL);
+                        }
+                        
+                    }else {
+                        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);            
+                    }
+                    
+
+                } else {
+                    ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+                }
+                break;
+
+            case INS_READ_FILE:
+                // In this case the APDU command should be
+                // CLA  INS     reading_offset  length      
+                // 0x80 0x01    0x00            0x05        0x00     -->> Reads 5 bytes beginning from 0
+                // NOTE: the file musn't be reached if the file isn't (selected && pincode submit)
+
+                if (file_selected) // and pinCOde submit
+                {
+                    if(pinCode.isValidated())
+                    {
+                        byte offset = buff[ISO7816.OFFSET_P1];
+                        byte len = buff[ISO7816.OFFSET_P2];
+
+                        if (offset + len > 255) {
+                            ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+                        }
+
+                        for (byte i = 0; i < len; i++) {
+                            buff[i] = File_content[offset + i];
+                        }
+
+                        // return data
+                        apdu.setOutgoingAndSend((byte) 0, (byte) len); // -->> OK
+                    }else{
+                        ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+                       }
+                    
+                } else {
+                    ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+                }
+                break;
+
+            case INS_SUBMIT_PIN:
+                // CLA  INS     P1      P2      Pin_length  Pin bytes   
+                // 0x80 0x02    0x00    0x00    0x04        0x0A 0x0B .. rest of the PIN
+
+                if (!pinCode.check(buff, ISO7816.OFFSET_CDATA, buff[ISO7816.OFFSET_LC])) {
+                    buff[0] = pinCode.getTriesRemaining();
+                    apdu.setOutgoingAndSend((byte) 0, (byte) 1);
+                    ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+                }
+
+                break;
+                
+            case INS_CHANGE_PIN:
+                // to reset PIN u need to have the IC
+                // CLA  INS     P1      P2      Pin_length  Pin bytes   
+                // 0x80 0x03    0x00    0x00    0x04        0x0A 0x0B .. rest of the PIN
+                // if LC == 0 -->> Reset
+                
+                if (icCode.isValidated()) {
+                    pinCode.update(buff, ISO7816.OFFSET_CDATA, buff[ISO7816.OFFSET_LC]);
+                    
+                } else {
+                    ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+                }
+
+                break;
+            
+            case INS_UNBLOCK_PIN:
+                // CLA  INS     P1      P2      IC_length   IC bytes    
+                // 0x80 0x04    0x00    0x00    0x04        0x0A 0x0B .. rest of the PIN
+                // if LC == 0 -->> Reset
+                
+                if (icCode.isValidated()) {
+                    pinCode.resetAndUnblock();
+                } else {
+                    ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+                }
+                break;
+                
+            case INS_SUBMIT_IC:
+                // CLA  INS     P1      P2      IC_length   IC bytes    
+                // 0x80 0x05    0x00    0x00    0x04        0x0A 0x0B .. rest of the PIN
+
+                if (!icCode.check(buff, ISO7816.OFFSET_CDATA, buff[ISO7816.OFFSET_LC])) {
+                    buff[0] = icCode.getTriesRemaining();
+                    apdu.setOutgoingAndSend((byte) 0, (byte) 1);
+                    ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+                }
+
+                break;
+                
+            case INS_CHANGE_IC:
+                // CLA  INS     P1      P2      IC_length   IC bytes    
+                // 0x80 0x06    0x00    0x00    0x04        0x0A 0x0B .. rest of the PIN
+                // if LC == 0 -->> Reset
+
+                if (icCode.isValidated()) {
+                    icCode.update(buff, ISO7816.OFFSET_CDATA, buff[ISO7816.OFFSET_LC]);
+                    
+                } else {
+                    ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+                }
+
+                break;
+                
+            default:
+                ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
+                break;
+            
+            
+        }
+
+    }
+
+}
+
+
